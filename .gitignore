@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+*.txt
+!README.md
+!requirements.txt
+
+# 数据库（开发时的个人数据）
+data/
+!data/.gitkeep
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# PyInstaller
+build/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 打包产物
+releases/
+
+# Idea
+*.spec.bak
+
+# 项目特定
+__patch_init.txt
+fix_*.py

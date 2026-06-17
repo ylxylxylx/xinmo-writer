@@ -1,0 +1,4 @@
+{
+  "port": 8077,
+  "db_path": "data/novels.db"
+}
