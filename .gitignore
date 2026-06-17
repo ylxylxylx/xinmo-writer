@@ -44,5 +44,6 @@ releases/
 *.spec.bak
 
 # 项目特定
+.reasonix/
 __patch_init.txt
 fix_*.py
