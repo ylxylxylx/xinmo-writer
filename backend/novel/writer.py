@@ -69,15 +69,19 @@ class NovelWriter:
 
         # 获取写手风格范例
         style_example = ""
+        template_author = ""
         writer_id = book.get("writer_id", "")
         if writer_id:
             from .writers import WRITERS_MAP
             w = WRITERS_MAP.get(writer_id)
-            if w and w.get("style_example"):
-                style_example = w["style_example"]
+            if w:
+                if w.get("style_example"):
+                    style_example = w["style_example"]
+                if w.get("template_author"):
+                    template_author = w["template_author"]
 
         system_prompt, user_prompt = build_chapter_prompt(
-            book, relevant_chars, outline, relevant_memories, recent_chapters, prev_ending, style_example
+            book, relevant_chars, outline, relevant_memories, recent_chapters, prev_ending, style_example, template_author
         )
 
         # 动态计算 max_tokens：中文约 1 字 = 1.5-2 tokens，留 1.8 倍余量

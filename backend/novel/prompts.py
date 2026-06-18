@@ -3,7 +3,7 @@
 import json
 
 
-def build_chapter_prompt(book, characters, outline, memories, recent_chapters, prev_ending="", style_example=""):
+def build_chapter_prompt(book, characters, outline, memories, recent_chapters, prev_ending="", style_example="", template_author=""):
     """构建写章节的 system + user message。去掉结构化标题，改用自然段落。"""
 
     parts = ["你是一位优秀的长篇网络小说作家。直接写出完整的章节内容。注意直接开始写正文，不要输出任何额外说明。"]
@@ -16,6 +16,9 @@ def build_chapter_prompt(book, characters, outline, memories, recent_chapters, p
         parts.append("")
         parts.append("参考这样的写法：")
         parts.append(style_example)
+    if template_author:
+        parts.append("")
+        parts.append(f"文风可以参考{template_author}的感觉来写。")
 
     if isinstance(writing_config, str):
         try:
