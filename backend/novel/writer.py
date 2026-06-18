@@ -40,7 +40,7 @@ class NovelWriter:
         prev_ending = ""
         prev_ch = NovelDB.get_chapter_by_number(book_id, chapter_number - 1)
         if prev_ch and prev_ch.get("content"):
-            prev_ending = prev_ch["content"][-800:]
+            prev_ending = prev_ch["content"][-1200:]
 
         # 使用三级合并的写作风格配置（全局默认 + 写手专属 + 单本覆盖）
         merged_cfg, _, _, _ = NovelDB.get_book_writing_config(book_id)

@@ -142,8 +142,10 @@ def build_chapter_prompt(book, characters, outline, memories, recent_chapters, p
     # 上一章结尾
     if prev_ending:
         parts.append("")
-        parts.append("上一章最后写到的地方是：")
+        parts.append("上一章结尾的内容是这样的——你必须从这里接着往下写，不能重复、不能跳过：")
         parts.append(prev_ending)
+        parts.append("")
+        parts.append("注意：上一章结尾的剧情、对话、场景要直接衔接过来，不要重新开启一个新场景，不要重复上一章已经说过的事。")
 
     system_prompt = "\n".join(parts)
 

@@ -1630,7 +1630,10 @@ if _VUE_DIST.exists():
 
 if __name__ == "__main__":
     import json as _json
+    # config.json 在项目根目录
     _config_file = Path(__file__).parent / "config.json"
+    if not _config_file.exists():
+        _config_file = Path(__file__).parent.parent / "config.json"
     if _config_file.exists():
         try: _cfg = _json.loads(_config_file.read_text(encoding='utf-8'))
         except: _cfg = {}
