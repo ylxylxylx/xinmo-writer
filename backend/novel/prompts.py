@@ -3,7 +3,7 @@
 import json
 
 
-def build_chapter_prompt(book, characters, outline, memories, recent_chapters, prev_ending=""):
+def build_chapter_prompt(book, characters, outline, memories, recent_chapters, prev_ending="", style_example=""):
     """构建写章节的 system + user message。去掉结构化标题，改用自然段落。"""
 
     parts = ["你是一位优秀的长篇网络小说作家。直接写出完整的章节内容。注意直接开始写正文，不要输出任何额外说明。"]
@@ -11,35 +11,11 @@ def build_chapter_prompt(book, characters, outline, memories, recent_chapters, p
     # 字数约束
     writing_config = book.get("writing_config", {})
 
-    # 风格参考
-    parts.append("")
-    parts.append("参考这样的写法：")
-    parts.append("“操。”赵小田骂了一句。")
-    parts.append("面前这地，裂得跟龟壳似的，别说种庄稼，撒把种子都能掉缝里去。")
-    parts.append("他蹲下来，抓了一把土，捏了捏，又闻了闻——碱的。")
-    parts.append("“殿下，要不……咱们换个地方？”身后的老太监小心翼翼地开口。")
-    parts.append("“换？”赵小田站起身，拍了拍手，“能换去哪儿？整个京城外头全是这鬼样子。”")
-    parts.append("老太监缩了缩脖子，不敢吭声了。")
-    parts.append("赵小田没理他，从怀里掏出一袋化肥。")
-    parts.append("“就这儿了。”他说。")
-    parts.append("")
-    parts.append("雨下了三天。")
-    parts.append("刘安坐在屋檐下，看着院子里积的水慢慢往屋里漫。")
-    parts.append("他没动。")
-    parts.append("准确地说，他已经两天没动过了。")
-    parts.append("锅里还有半碗粥，馊了。他知道，但他懒得热。")
-    parts.append("媳妇儿回娘家了，走的时候摔了门，门栓到现在还歪着。")
-    parts.append("他就这么看着。看着水漫进来，漫过门槛，漫到他脚边。")
-    parts.append("")
-    parts.append("刀砍过来的时候，陈飞没躲。")
-    parts.append("不是不想躲，是来不及。")
-    parts.append("他的刀还在鞘里，对方的刀已经到了他脖子三寸外。")
-    parts.append("完了——他想。")
-    parts.append("“铛——”")
-    parts.append("一支箭擦着他的耳朵飞过去，正中对方的刀面。")
-    parts.append("火星溅了他一脸。")
-    parts.append("“发什么愣！”远处传来喊声，“跑啊！”")
-    parts.append("陈飞这才反应过来，转身就跑。")
+    # 风格参考（来自写手配置）
+    if style_example:
+        parts.append("")
+        parts.append("参考这样的写法：")
+        parts.append(style_example)
 
     if isinstance(writing_config, str):
         try:

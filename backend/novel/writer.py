@@ -67,8 +67,17 @@ class NovelWriter:
         relevant_memories = self._filter_relevant_memories(memories, outline, recent_chapters)
         notify("正在构建 prompt...")
 
+        # 获取写手风格范例
+        style_example = ""
+        writer_id = book.get("writer_id", "")
+        if writer_id:
+            from .writers import WRITERS_MAP
+            w = WRITERS_MAP.get(writer_id)
+            if w and w.get("style_example"):
+                style_example = w["style_example"]
+
         system_prompt, user_prompt = build_chapter_prompt(
-            book, relevant_chars, outline, relevant_memories, recent_chapters, prev_ending
+            book, relevant_chars, outline, relevant_memories, recent_chapters, prev_ending, style_example
         )
 
         # 动态计算 max_tokens：中文约 1 字 = 1.5-2 tokens，留 1.8 倍余量
