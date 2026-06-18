@@ -35,6 +35,7 @@ function getDefaultWriterForm() {
   return {
     name: "", avatar: "✏️", style: "", description: "",
     genres: "", writing_rules: "", behavior_locks: "", prohibited_words: "",
+    style_example: "",
     natural_dialogue: true, no_useless_details: true,
     max_env_sentences: 3, max_inner_sentences: 3,
   }
@@ -156,6 +157,7 @@ function openEditWriter(w) {
     writing_rules: w.config?.writing_rules || "",
     behavior_locks: w.config?.behavior_locks || "",
     prohibited_words: w.config?.prohibited_words || "",
+    style_example: w.style_example || "",
     natural_dialogue: w.config?.advanced?.natural_dialogue ?? true,
     no_useless_details: w.config?.advanced?.no_useless_details ?? true,
     max_env_sentences: w.config?.advanced?.max_env_sentences ?? 3,
@@ -184,6 +186,7 @@ async function saveWriter() {
     writing_rules: f.writing_rules,
     behavior_locks: f.behavior_locks,
     prohibited_words: f.prohibited_words,
+    style_example: f.style_example,
     natural_dialogue: String(f.natural_dialogue),
     no_useless_details: String(f.no_useless_details),
     max_env_sentences: f.max_env_sentences,
@@ -346,6 +349,10 @@ async function deleteWriter(w) {
     <div class="form-group">
       <label>描述</label>
       <el-input v-model="writerForm.description" type="textarea" :rows="2" placeholder="一句话描述写手的风格特点..." />
+    </div>
+    <div class="form-group">
+      <label>风格范例（正文生成时作为文风参考）</label>
+      <el-input v-model="writerForm.style_example" type="textarea" :rows="5" placeholder="一段体现写手文风的示例文字..." />
     </div>
     <div class="form-group">
       <label>擅长题材（逗号分隔）</label>

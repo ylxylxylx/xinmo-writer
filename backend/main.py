@@ -1203,6 +1203,7 @@ async def api_create_writer(request: Request):
         "avatar": form.get("avatar", "✏️"),
         "style": form.get("style", ""),
         "description": form.get("description", ""),
+        "style_example": form.get("style_example", ""),
         "genres": [g.strip() for g in form.get("genres", "").split(",") if g.strip()],
         "config": {
             "writing_rules": form.get("writing_rules", ""),
@@ -1235,6 +1236,7 @@ async def api_update_writer(writer_id: str, request: Request):
         "avatar": form.get("avatar", ""),
         "style": form.get("style", ""),
         "description": form.get("description", ""),
+        "style_example": form.get("style_example", ""),
         "genres": [g.strip() for g in form.get("genres", "").split(",") if g.strip()],
         "config": {
             "writing_rules": form.get("writing_rules", ""),
