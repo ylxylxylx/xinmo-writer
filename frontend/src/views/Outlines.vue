@@ -223,6 +223,8 @@ async function remove(o) {
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div style="display:flex;align-items:center;gap:8px;">
           <el-tag size="small">第{{ o.chapter_number }}章</el-tag>
+          <el-tag v-if="o.pace_type" :type="o.pace_type === '爆发' ? 'danger' : o.pace_type === '蓄势' ? 'warning' : 'info'" size="small" effect="plain">{{ o.pace_type }}</el-tag>
+          <el-tag v-if="o.emotion" type="primary" size="small" effect="plain">{{ o.emotion }}</el-tag>
           <strong>{{ o.title || "无标题" }}</strong>
           <span v-if="o.word_target" style="color:var(--text-dim);font-size:12px;">目标{{ o.word_target }}字</span>
         </div>

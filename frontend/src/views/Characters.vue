@@ -24,7 +24,7 @@ watch(() => route.params.bookId, load)
 
 function openAdd() {
   editing.value = null
-  form.value = { name: "", description: "", background: "", appearance: "", traits: "", relationships: "" }
+  form.value = { name: "", description: "", background: "", appearance: "", traits: "", relationships: "", emotion_profile: "" }
   showModal.value = true
 }
 
@@ -38,7 +38,8 @@ function openEdit(c) {
     traits: Array.isArray(c.traits) ? c.traits.join("、") : (c.traits || ""),
     relationships: Array.isArray(c.relationships)
       ? c.relationships.map(r => `${r.relation}（${r.target}）`).join("、")
-      : (typeof c.relationships === "string" ? c.relationships : "")
+      : (typeof c.relationships === "string" ? c.relationships : ""),
+    emotion_profile: c.emotion_profile || ""
   }
   showModal.value = true
 }
@@ -141,6 +142,11 @@ function parseRels(r) {
             </div>
           </div>
         </div>
+        <!-- 情绪反应模式 -->
+        <div class="char-section" v-if="c.emotion_profile">
+          <span class="char-label">情绪反应模式</span>
+          <p class="char-text">{{ c.emotion_profile }}</p>
+        </div>
       </div>
     </div>
   </div>
@@ -154,6 +160,7 @@ function parseRels(r) {
       <el-form-item label="外貌描写"><el-input v-model="form.appearance" type="textarea" :rows="2" /></el-form-item>
       <el-form-item label="性格特质（顿号或逗号分隔）"><el-input v-model="form.traits" placeholder="勇敢、机智、内向..." /></el-form-item>
       <el-form-item label="人际关系（顿号或逗号分隔）"><el-input v-model="form.relationships" placeholder="对手（张三）、师徒（李四）..." /></el-form-item>
+      <el-form-item label="情绪反应模式"><el-input v-model="form.emotion_profile" type="textarea" :rows="2" placeholder="紧张时会用冷笑话来掩饰，愤怒时反而变得特别冷静…" /></el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="showModal=false">取消</el-button>

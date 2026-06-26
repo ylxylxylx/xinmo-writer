@@ -45,5 +45,6 @@ releases/
 
 # 项目特定
 .reasonix/
+.workbuddy/
 __patch_init.txt
 fix_*.py
