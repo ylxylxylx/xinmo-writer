@@ -78,6 +78,10 @@ def init_db():
             appearance TEXT DEFAULT '',
             relationships TEXT DEFAULT '[]',
             status TEXT DEFAULT 'active',
+            first_appearance_volume INTEGER DEFAULT 1,
+            first_appearance_desc TEXT DEFAULT '',
+            speech_style TEXT DEFAULT '',
+            dialogue_sample TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         );
@@ -125,6 +129,7 @@ def init_db():
             storyline TEXT DEFAULT '',
             foreshadowing TEXT DEFAULT '',
             foreshadowing_payoff TEXT DEFAULT '',
+            pace_type TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
             FOREIGN KEY (volume_id) REFERENCES volumes(id) ON DELETE SET NULL
@@ -181,6 +186,22 @@ def init_db():
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS character_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id TEXT NOT NULL,
+            character_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            location TEXT DEFAULT '',
+            status TEXT DEFAULT '',
+            last_chapter INTEGER DEFAULT 0,
+            time_note TEXT DEFAULT '',
+            is_alive INTEGER DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+            FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+            UNIQUE(book_id, character_id)
+        );
+
         CREATE TABLE IF NOT EXISTS config (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -220,6 +241,14 @@ def init_db():
         ("volumes", "end_hook", "TEXT DEFAULT ''"),
         ("volumes", "estimated_words", "INTEGER DEFAULT 0"),
         ("books", "planned_volumes", "INTEGER DEFAULT 0"),
+        ("characters", "first_appearance_volume", "INTEGER DEFAULT 1"),
+        ("characters", "first_appearance_desc", "TEXT DEFAULT ''"),
+        ("characters", "speech_style", "TEXT DEFAULT ''"),
+        ("characters", "dialogue_sample", "TEXT DEFAULT ''"),
+        ("outlines", "pace_type", "TEXT DEFAULT ''"),
+        ("outlines", "emotion", "TEXT DEFAULT ''"),
+        ("character_states", "is_alive", "INTEGER DEFAULT 1"),
+        ("characters", "emotion_profile", "TEXT DEFAULT ''"),
     ]
     for table, column, col_type in _migrations:
         try:

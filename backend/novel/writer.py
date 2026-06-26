@@ -36,11 +36,11 @@ class NovelWriter:
         memories = NovelDB.get_active_memories(book_id)
         recent_chapters = NovelDB.get_chapter_summaries(book_id, limit=5)
 
-        # 获取上一章结尾文本（确保连贯衔接）
+        # 获取上一章结尾文本（衔接参考，不要太多否则 LLM 容易原文复读）
         prev_ending = ""
         prev_ch = NovelDB.get_chapter_by_number(book_id, chapter_number - 1)
         if prev_ch and prev_ch.get("content"):
-            prev_ending = prev_ch["content"][-1200:]
+            prev_ending = prev_ch["content"][-800:]
 
         # 使用三级合并的写作风格配置（全局默认 + 写手专属 + 单本覆盖）
         merged_cfg, _, _, _ = NovelDB.get_book_writing_config(book_id)
@@ -58,10 +58,25 @@ class NovelWriter:
         if outline_content and outline:
             outline["outline_content"] = outline_content
 
-        # 按需过滤角色：只传本章相关的角色
-        relevant_chars = self._filter_relevant_characters(characters, outline)
-        if not relevant_chars:
-            relevant_chars = characters  # 如果过滤后为空， fallback 到全部角色
+        # 获取当前卷号，用于角色出场门控
+        current_volume_number = 1
+        if outline and outline.get("volume_id"):
+            vol = NovelDB.get_volume(outline["volume_id"])
+            if vol:
+                current_volume_number = vol.get("number", 1)
+
+        # 三级角色门控：已登场 / 即将登场 / 隐藏
+        gated = self._gate_characters_by_volume(characters, current_volume_number)
+        active_chars = gated["active"]
+        upcoming_chars = gated["upcoming"]
+
+        # 在已登场角色中，按细纲相关性进一步过滤
+        relevant_active = self._filter_relevant_characters(active_chars, outline)
+        if not relevant_active:
+            relevant_active = active_chars
+
+        # 即将登场的角色中，只保留和本章细纲相关的（否则列表过长）
+        relevant_upcoming = self._filter_upcoming_characters(upcoming_chars, outline)
 
         # 按相关性过滤记忆：最近 N 章 + 和当前章节相关的
         relevant_memories = self._filter_relevant_memories(memories, outline, recent_chapters)
@@ -70,6 +85,7 @@ class NovelWriter:
         # 获取写手风格范例
         style_example = ""
         template_author = ""
+        volume_info = ""
         writer_id = book.get("writer_id", "")
         if writer_id:
             from .writers import WRITERS_MAP
@@ -80,18 +96,56 @@ class NovelWriter:
                 if w.get("template_author"):
                     template_author = w["template_author"]
 
-        system_prompt, user_prompt = build_chapter_prompt(
-            book, relevant_chars, outline, relevant_memories, recent_chapters, prev_ending, style_example, template_author
-        )
+        # 卷内位置信息 + 情绪弧线
+        all_outlines = NovelDB.list_outlines(book_id)
+        vol_outlines = [o for o in all_outlines if o.get("volume_id") == (outline.get("volume_id") if outline else None)]
+        if vol_outlines:
+            total = len(vol_outlines)
+            idx = next((i + 1 for i, o in enumerate(vol_outlines) if o["chapter_number"] == chapter_number), 0)
+            if idx > 0:
+                parts = []
+                parts.append(f"这是本卷的第 {idx}/{total} 章。")
+                if idx == 1:
+                    parts.append("本章是开篇，要引出本卷的核心冲突和人物。")
+                elif idx == total:
+                    parts.append("本章是本卷的最后一章，要收束本卷的主要矛盾，并为下一卷埋下伏笔。")
+                elif idx <= total * 0.3:
+                    parts.append("本章处于本卷的前期，主要任务是推进剧情、展开冲突。")
+                elif idx >= total * 0.7:
+                    parts.append("本章处于本卷的后期，剧情应逐步推向高潮。")
+                else:
+                    parts.append("本章处于本卷的中段，可以深化矛盾、铺垫高潮。")
+
+                # 情绪弧线
+                vol = NovelDB.get_volume(outline["volume_id"]) if outline and outline.get("volume_id") else None
+                if vol and vol.get("emotion_arc"):
+                    arc = vol["emotion_arc"]
+                    # 按章节比例定位情绪阶段
+                    arc_steps = [s.strip() for s in arc.replace("→", ",").split(",") if s.strip()]
+                    if arc_steps and total > 0:
+                        step_idx = min(int((idx - 1) * len(arc_steps) / max(total, 1)), len(arc_steps) - 1)
+                        parts.append(f"本卷的情绪弧线是：{arc}。当前章节处于「{arc_steps[step_idx]}」阶段。")
+
+                volume_info = "\n".join(parts)
 
         # 动态计算 max_tokens：中文约 1 字 = 1.5-2 tokens，留 1.8 倍余量
         max_words = merged_cfg.get("max_words", 4000)
         dynamic_max_tokens = int(max_words * 1.8)
-        # 确保在合理范围内
         dynamic_max_tokens = max(2048, min(dynamic_max_tokens, 12288))
 
-        notify("正在调用 AI 模型生成正文...")
-        # 流式输出
+        # 获取相关角色的当前状态（用于空间一致性约束）
+        all_states = NovelDB.list_character_states(book_id)
+        relevant_state_names = {c["name"] for c in relevant_active}
+        relevant_states = [s for s in all_states if s["name"] in relevant_state_names]
+
+        # ═══ 单次生成 ═══
+        system_prompt, user_prompt = build_chapter_prompt(
+            book, relevant_active, outline, relevant_memories, recent_chapters, prev_ending,
+            style_example, template_author, volume_info, characters_upcoming=relevant_upcoming,
+            character_states=relevant_states
+        )
+
+        notify("正在生成正文...")
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -151,9 +205,15 @@ class NovelWriter:
             )
             chapter_id = ch["id"]
 
-        # 自动提取记忆 — 后台异步执行，不阻塞返回
+        # 角色状态：同步提取（确保写完章节后状态立即可用）
+        try:
+            self._extract_character_states(book_id, chapter_number, content)
+        except Exception as e:
+            print(f"[character_state] sync extract failed: {e}")
+
+        # 记忆事实提取：后台异步，不阻塞返回
         import threading
-        threading.Thread(target=self._extract_memory, args=(book_id, chapter_number, content), daemon=True).start()
+        threading.Thread(target=self._extract_memory_facts, args=(book_id, chapter_number, content), daemon=True).start()
 
         return {"chapter_id": chapter_id, "chapter_number": chapter_number, "title": title,
                 "word_count": word_count, "content": content, "summary": summary}
@@ -200,6 +260,47 @@ class NovelWriter:
 
         return characters
 
+    def _gate_characters_by_volume(self, characters, current_volume_number):
+        """按首次登场卷号将角色分为三级：已登场 / 即将登场 / 隐藏。
+        未设置 first_appearance_volume 的角色默认第 1 卷登场（向后兼容）。
+        """
+        active = []
+        upcoming = []
+        hidden = []
+        for char in characters:
+            fav = char.get("first_appearance_volume") or 1
+            try:
+                fav = int(fav)
+            except (TypeError, ValueError):
+                fav = 1
+            if fav <= current_volume_number:
+                active.append(char)
+            elif fav == current_volume_number + 1:
+                upcoming.append(char)
+            else:
+                hidden.append(char)
+        return {"active": active, "upcoming": upcoming, "hidden": hidden}
+
+    def _filter_upcoming_characters(self, upcoming_chars, outline):
+        """从即将登场的角色中，筛出本章细纲提及的角色（用于伏笔铺垫）。
+        无匹配时返回空列表，不做 fallback。
+        """
+        if not outline or not upcoming_chars:
+            return []
+
+        text_fields = [
+            outline.get("storyline", ""),
+            outline.get("conflict", ""),
+            outline.get("outline_content", ""),
+            outline.get("hook", ""),
+            outline.get("foreshadowing", ""),
+        ]
+        all_text = " ".join(text_fields)
+        if not all_text.strip():
+            return []
+
+        return [c for c in upcoming_chars if c["name"] in all_text]
+
     def _filter_relevant_memories(self, memories, outline, recent_chapters):
         """按相关性过滤记忆：最近章节的记忆 + 和当前章节相关的记忆。"""
         if not memories:
@@ -244,6 +345,17 @@ class NovelWriter:
         return relevant[:20]
 
     def _extract_memory(self, book_id, chapter_number, content):
+        """从章节内容中提取关键事实存入记忆表，并更新角色状态。"""
+        try:
+            self._extract_memory_facts(book_id, chapter_number, content)
+        except Exception:
+            pass
+        try:
+            self._extract_character_states(book_id, chapter_number, content)
+        except Exception:
+            pass
+
+    def _extract_memory_facts(self, book_id, chapter_number, content):
         """从章节内容中提取关键事实存入记忆表。使用全文提取。"""
         try:
             self._ensure_client()
@@ -299,6 +411,100 @@ class NovelWriter:
         except Exception:
             # 提取失败也不影响主流程
             pass
+
+    def _extract_character_states(self, book_id, chapter_number, content):
+        """从章节内容中提取角色当前位置、状态和时间线标注，更新 character_states 表。"""
+        try:
+            self._ensure_client()
+
+            max_chunk = 6000
+            if len(content) > max_chunk:
+                content = content[:max_chunk] + "\n……（后续内容省略）"
+
+            characters = NovelDB.list_characters(book_id)
+
+            prompt = f"""从以下小说章节中，提取每个出现过的角色的当前状态。
+要求：
+1. 只提取这章确实出现、被明确提到，或有行动/状态变化的角色
+2. 对每个人物，提取以下字段：
+   - name: 角色名
+   - location: 当前所在地点
+   - status: 当前在做什么 / 处境如何
+   - time_note: 本章末尾是否暗示了时间流逝（如"三天后"、"转眼半月"、"翌日清晨"等）。没有则填空字符串
+3. 输出严格 JSON 数组，不要 markdown 代码块
+
+章节内容：
+{content}
+"""
+            resp = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=3072,
+            )
+            raw = resp.choices[0].message.content.strip()
+            states = self._parse_character_states(raw)
+            if not isinstance(states, list):
+                print(f"[character_state] ch={chapter_number} parse failed, raw={raw[:200]}")
+                return
+
+            characters = NovelDB.list_characters(book_id)
+            char_id_map = {c["name"]: c["id"] for c in characters}
+
+            updated = 0
+            for s in states:
+                name = s.get("name", "").strip()
+                char_id = char_id_map.get(name)
+                if not char_id:
+                    continue
+                # 保留用户手动设置的 is_alive 状态（防止自动提取把"已死亡"覆写回"存活"）
+                existing_state = NovelDB.get_character_state(book_id, char_id)
+                preserved_alive = existing_state.get("is_alive", 1) if existing_state else 1
+                NovelDB.upsert_character_state(
+                    book_id=book_id,
+                    character_id=char_id,
+                    name=name,
+                    location=s.get("location", "").strip(),
+                    status=s.get("status", "").strip(),
+                    last_chapter=chapter_number,
+                    time_note=s.get("time_note", "").strip(),
+                    is_alive=preserved_alive,
+                )
+                updated += 1
+            print(f"[character_state] ch={chapter_number} updated={updated}")
+        except Exception as e:
+            print(f"[character_state] ch={chapter_number} error: {e}")
+
+    def _parse_character_states(self, raw):
+        """解析 LLM 返回的角色状态 JSON，支持 markdown 代码块和容错。"""
+        if not raw:
+            return None
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        # 尝试提取方括号包裹的 JSON 数组
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                pass
+        # 兜底：尝试补齐被截断的 JSON 数组（max_tokens 不够导致 ]
+        if text.startswith("[") and not text.rstrip().endswith("]"):
+            fixed = text.rstrip().rstrip(",") + "\n]"
+            try:
+                result = json.loads(fixed)
+                print(f"[character_state] recovered truncated JSON, got {len(result)} items")
+                return result
+            except Exception:
+                pass
+        return None
 
     def approve_chapter(self, chapter_id):
         """标记章节为已批准"""
@@ -359,7 +565,16 @@ class NovelWriter:
             if ol:
                 target_outlines.append(ol)
 
-        char_desc = "\n".join(f"- {c['name']}：{c['description']}" for c in characters) or "暂无"
+        # 角色出场门控：骨架规划也只让已登场的角色参与
+        current_volume_number = 1
+        if target_outlines and target_outlines[0].get("volume_id"):
+            vol = NovelDB.get_volume(target_outlines[0]["volume_id"])
+            if vol:
+                current_volume_number = vol.get("number", 1)
+        gated = self._gate_characters_by_volume(characters, current_volume_number)
+        gated_chars = gated["active"] or gated["upcoming"] or characters[:3]
+
+        char_desc = "\n".join(f"- {c['name']}：{c['description']}" for c in gated_chars) or "暂无"
 
         # 细纲详情
         outline_desc = ""
@@ -433,38 +648,63 @@ class NovelWriter:
         book["writing_config"] = merged_cfg
         outlines = NovelDB.list_outlines(book_id)
         outline_map = {o["chapter_number"]: o for o in outlines}
-
-        # 构建 system prompt（复用 build_chapter_prompt 的逻辑）
-        from .prompts import build_chapter_prompt
-        # 用第一章的 outline 构建基础 system prompt
         first_outline = outline_map.get(chapter_numbers[0])
-        recent_chapters = NovelDB.get_chapter_summaries(book_id, limit=5)
-        base_system, _ = build_chapter_prompt(
-            book, characters, first_outline, memories, recent_chapters, ""
-        )
 
-        # 补充骨架全局视角到 system prompt
+        # 角色出场门控
+        current_volume_number = 1
+        if first_outline and first_outline.get("volume_id"):
+            vol = NovelDB.get_volume(first_outline["volume_id"])
+            if vol:
+                current_volume_number = vol.get("number", 1)
+        gated = self._gate_characters_by_volume(characters, current_volume_number)
+        active_chars = gated["active"] or gated["upcoming"] or characters[:3]
+        upcoming_chars = gated["upcoming"]
+
+        # 补充骨架全局视角到 system prompt（每章复用）
         skeleton_overview = "\n\n## 本次批量生成的骨架规划\n"
         for num in chapter_numbers:
             sk = skeletons.get(num, "")
             ol = outline_map.get(num, {})
             skeleton_overview += f"第{num}章「{ol.get('title', '')}」：{sk}\n"
-        base_system += skeleton_overview
-        base_system += (
+
+        coherence_requirements = (
             "\n\n## 连贯性要求\n"
             "- 你将连续生成多章正文，每章必须自然衔接上一章的结尾\n"
             "- 保持文风、用词习惯、叙事节奏的一致性\n"
             "- 角色的性格和说话方式必须前后一致\n"
-            "- 不要重复上一章已经发生的情节\n"
+            "- 不要重复情节，也绝对不要复制原文\n"
         )
 
         # 多轮对话：逐章扩写
-        messages = [{"role": "system", "content": base_system}]
+        messages = []
         results = []
 
         for i, ch_num in enumerate(chapter_numbers):
             ol = outline_map.get(ch_num, {})
             skeleton = skeletons.get(ch_num, "")
+
+            # 本章相关角色及其当前状态
+            relevant_active = self._filter_relevant_characters(active_chars, ol)
+            if not relevant_active:
+                relevant_active = active_chars
+            all_states = NovelDB.list_character_states(book_id)
+            relevant_state_names = {c["name"] for c in relevant_active}
+            relevant_states = [s for s in all_states if s["name"] in relevant_state_names]
+
+            # 每章重新构建 system prompt，注入最新角色状态和最近章节摘要
+            recent_chapters = NovelDB.get_chapter_summaries(book_id, limit=5)
+            base_system, _ = build_chapter_prompt(
+                book, active_chars, ol, memories, recent_chapters, "",
+                characters_upcoming=upcoming_chars,
+                character_states=relevant_states
+            )
+            base_system += skeleton_overview
+            base_system += coherence_requirements
+
+            if messages and messages[0]["role"] == "system":
+                messages[0] = {"role": "system", "content": base_system}
+            else:
+                messages.insert(0, {"role": "system", "content": base_system})
 
             # 构建本章的 user message
             user_parts = [f"## 请扩写第{ch_num}章"]
@@ -551,8 +791,16 @@ class NovelWriter:
                 )
                 chapter_id = ch["id"]
 
-            # 提取记忆
-            self._extract_memory(book_id, ch_num, content)
+            # 角色状态：同步提取
+            try:
+                self._extract_character_states(book_id, ch_num, content)
+            except Exception as e:
+                print(f"[character_state] batch sync extract failed for ch{ch_num}: {e}")
+            # 记忆事实提取
+            try:
+                self._extract_memory_facts(book_id, ch_num, content)
+            except Exception:
+                pass
 
             results.append({
                 "chapter_id": chapter_id, "chapter_number": ch_num,

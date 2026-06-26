@@ -86,15 +86,18 @@ class NovelDB:
     # ─── Character ───────────────────────────────────────────────────
     @staticmethod
     def create_character(book_id, name, description="", background="", traits=None,
-                         appearance="", relationships=None):
+                         appearance="", relationships=None,
+                         first_appearance_volume=1, first_appearance_desc="",
+                         speech_style="", dialogue_sample="", emotion_profile=""):
         if traits is None: traits = []
         if relationships is None: relationships = []
         db = get_db()
         cur = db.execute(
-            "INSERT INTO characters (book_id, name, description, background, traits, appearance, relationships) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO characters (book_id, name, description, background, traits, appearance, relationships, "
+            "first_appearance_volume, first_appearance_desc, speech_style, dialogue_sample, emotion_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (book_id, name, description, background, json.dumps(traits, ensure_ascii=False),
-             appearance, json.dumps(relationships, ensure_ascii=False)),
+             appearance, json.dumps(relationships, ensure_ascii=False),
+             first_appearance_volume, first_appearance_desc, speech_style, dialogue_sample, emotion_profile),
         )
         db.commit()
         c = dict(db.execute("SELECT * FROM characters WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -126,7 +129,8 @@ class NovelDB:
 
     @staticmethod
     def update_character(char_id, **kwargs):
-        allowed = {"name", "description", "background", "traits", "appearance", "relationships", "status"}
+        allowed = {"name", "description", "background", "traits", "appearance", "relationships", "status",
+                   "first_appearance_volume", "first_appearance_desc", "speech_style", "dialogue_sample", "emotion_profile"}
         fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not fields: return
         if "traits" in fields and isinstance(fields["traits"], list):
@@ -214,14 +218,15 @@ class NovelDB:
     def create_outline(book_id, chapter_number, title="", outline_content="",
                        volume_id=None, word_target=2000,
                        conflict="", excitement="", hook="",
-                       storyline="", foreshadowing="", foreshadowing_payoff=""):
+                       storyline="", foreshadowing="", foreshadowing_payoff="",
+                       pace_type="", emotion=""):
         db = get_db()
         cur = db.execute(
             "INSERT INTO outlines (book_id, volume_id, chapter_number, title, outline_content, word_target, "
-            "conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff, pace_type, emotion) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (book_id, volume_id, chapter_number, title, outline_content, word_target,
-             conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff),
+             conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff, pace_type, emotion),
         )
         db.commit()
         o = dict(db.execute("SELECT * FROM outlines WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -253,7 +258,8 @@ class NovelDB:
     @staticmethod
     def update_outline(outline_id, **kwargs):
         allowed = {"chapter_number", "title", "outline_content", "word_target", "status", "volume_id",
-                    "conflict", "excitement", "hook", "storyline", "foreshadowing", "foreshadowing_payoff"}
+                    "conflict", "excitement", "hook", "storyline", "foreshadowing", "foreshadowing_payoff",
+                    "pace_type"}
         fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not fields: return
         sets = ", ".join(f"{k}=?" for k in fields)
@@ -460,6 +466,50 @@ class NovelDB:
         ).fetchall()
         db.close()
         return [dict(r) for r in reversed(rows)]
+
+    # ─── Character State ─────────────────────────────────────────────
+    @staticmethod
+    def upsert_character_state(book_id, character_id, name, location="", status="", last_chapter=0, time_note="", is_alive=1):
+        db = get_db()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.execute(
+            """INSERT INTO character_states (book_id, character_id, name, location, status, last_chapter, time_note, is_alive, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(book_id, character_id) DO UPDATE SET
+                 name=excluded.name, location=excluded.location, status=excluded.status,
+                 last_chapter=excluded.last_chapter, time_note=excluded.time_note,
+                 is_alive=excluded.is_alive, updated_at=excluded.updated_at""",
+            (book_id, character_id, name, location, status, last_chapter, time_note, is_alive, now),
+        )
+        db.commit()
+        db.close()
+
+    @staticmethod
+    def list_character_states(book_id):
+        db = get_db()
+        rows = db.execute(
+            "SELECT * FROM character_states WHERE book_id=? ORDER BY last_chapter DESC, name",
+            (book_id,),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def get_character_state(book_id, character_id):
+        db = get_db()
+        r = dict(db.execute(
+            "SELECT * FROM character_states WHERE book_id=? AND character_id=?",
+            (book_id, character_id),
+        ).fetchone() or {})
+        db.close()
+        return r or None
+
+    @staticmethod
+    def delete_character_state(state_id):
+        db = get_db()
+        db.execute("DELETE FROM character_states WHERE id=?", (state_id,))
+        db.commit()
+        db.close()
 
     # ─── Config ──────────────────────────────────────────────────────
     @staticmethod

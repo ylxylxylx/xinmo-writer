@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -49,6 +50,7 @@ class WizardService:
         self._client = OpenAI(api_key=api_key, base_url=base_url)
 
     def _chat(self, system_prompt, user_prompt, max_tokens=2048, temperature=0.8):
+        """调用 LLM 并返回解析后的 JSON 对象/数组。"""
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -60,11 +62,64 @@ class WizardService:
             stream=False,
         )
         raw = resp.choices[0].message.content.strip()
+        # 剥离 markdown 代码块（支持 ```json...``` 和 ```...```）
         if raw.startswith("```"):
             raw = raw.strip("`").strip()
             if raw.lower().startswith("json"):
                 raw = raw[4:].strip()
-        return raw
+        return self._extract_json(raw)
+
+    def _extract_json(self, text):
+        """从 LLM 响应中提取 JSON 数组或对象。支持：
+        1. 直接解析
+        2. markdown 代码块（已被 _chat 处理）
+        3. 从任意位置提取 JSON 数组/对象
+        4. 截断恢复（补 ] 或 }）
+        """
+        # 尝试 1: 直接解析
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        # 尝试 2: 再次剥离可能的嵌套代码块
+        t = text.strip()
+        if t.startswith("```"):
+            t = t.strip("`").strip()
+            if t.lower().startswith("json"):
+                t = t[4:].strip()
+            try:
+                return json.loads(t)
+            except Exception:
+                pass
+
+        # 尝试 3: 从任意位置提取 JSON 数组
+        m = re.search(r"\[.*\]", text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                # 可能是截断的数组，尝试补 ]
+                candidate = m.group(0).rstrip().rstrip(",") + "\n]"
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    pass
+
+        # 尝试 4: 从任意位置提取 JSON 对象
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                try:
+                    candidate = m.group(0).rstrip().rstrip(",") + "\n}"
+                    return json.loads(candidate)
+                except Exception:
+                    pass
+
+        # 全部失败，返回原始文本让上层处理
+        raise ValueError(f"无法解析 LLM 返回的 JSON，原始内容前 200 字: {text[:200]}")
 
     def suggest_ideas(self):
         self._ensure_client()
@@ -84,7 +139,7 @@ class WizardService:
         )
         user = "请生成 5 个小说创意点子。"
         raw = self._chat(system, user, max_tokens=2048, temperature=0.9)
-        candidates = json.loads(raw)
+        candidates = raw
         if isinstance(candidates, list):
             return [str(c) for c in candidates]
         return []
@@ -98,8 +153,7 @@ class WizardService:
             "不要输出其他内容，只输出 JSON。"
         )
         user = f"用户创意：{idea}"
-        raw = self._chat(system, user, max_tokens=1024, temperature=0.9)
-        candidates = json.loads(raw)
+        candidates = self._chat(system, user, max_tokens=1024, temperature=0.9)
         if isinstance(candidates, list):
             return [{"name": c.get("name", ""), "brief": c.get("brief", "")} for c in candidates]
         return []
@@ -124,7 +178,7 @@ class WizardService:
             "严格输出JSON数组，每项含title/brief/hook三个字段，不要其他内容。"
         )
         raw = self._chat(system, user, max_tokens=2048, temperature=0.9)
-        candidates = json.loads(raw)
+        candidates = raw
         if isinstance(candidates, list):
             result = [
                 {"title": c.get("title", ""), "brief": c.get("brief", ""), "hook": c.get("hook", "")}
@@ -164,6 +218,11 @@ class WizardService:
             "  - traits：性格特征（字符串数组，3-5个）\n"
             "  - appearance：外貌描写（100字以内，要有辨识度的细节）\n"
             "  - relationships：人际关系（数组，每项含 relation 和 target）\n"
+            "  - first_appearance_volume：首次登场卷序号（整数，从1开始。主角和核心配角第1卷登场，中期重要角色第2-3卷，后期角色第4卷或更后。要符合故事节奏，不要让所有角色都挤在第1卷）\n"
+            "  - first_appearance_desc：登场方式（50字以内，简述这个角色如何进入故事，例如：'以流浪剑客身份抵达边城，因一场意外卷入主线'）\n"
+            "  - speech_style：说话风格（50字以内，描述这个角色说话的习惯和特点，例如：'话少，能一个字说完绝不用两个字，偶尔蹦脏话'或'爱用反问句，语速慢，阴阳怪气'）\n"
+            "  - dialogue_sample：一句示范台词（30字以内，用这个角色的口吻写一句他可能会说的话，体现他的说话风格，例如：'得了吧，少跟我来这套。'）\n"
+            "  - emotion_profile：情绪反应模式（100字以内，描述这个角色在不同情绪下的反应方式，例如：'紧张时会用冷笑话来掩饰，愤怒时反而变得特别冷静，害怕时嘴上逞强但手上不停干活'或'开心时话多，难过时沉默，愤怒时会摔东西'）\n"
             "- world_setting：世界观设定（800字以内，必须用【xxx】标记分段，例如：\n"
             "  【地理环境】描述世界的地理特征...\n"
             "  【势力格局】描述主要势力和关系...\n"
@@ -176,8 +235,7 @@ class WizardService:
         if writer_style:
             step1_user += f"\n写手风格：{writer_style}"
 
-        raw1 = self._chat(step1_system, step1_user, max_tokens=8192, temperature=0.7)
-        step1 = json.loads(raw1)
+        step1 = self._chat(step1_system, step1_user, max_tokens=8192, temperature=0.7)
 
         # ── 第二步：故事架构（故事线 + 爽点 + 钩子）──
         chars_desc = "\n".join(
@@ -204,8 +262,7 @@ class WizardService:
             f"世界观：\n{world_desc}"
         )
 
-        raw2 = self._chat(step2_system, step2_user, max_tokens=4096, temperature=0.8)
-        step2 = json.loads(raw2)
+        step2 = self._chat(step2_system, step2_user, max_tokens=4096, temperature=0.8)
 
         # ── 第三步：整合校验 ──
         step3_system = (
@@ -225,8 +282,7 @@ class WizardService:
             f"钩子策略：{step2.get('hook_type', '')}"
         )
 
-        raw3 = self._chat(step3_system, step3_user, max_tokens=2048, temperature=0.3)
-        step3 = json.loads(raw3)
+        step3 = self._chat(step3_system, step3_user, max_tokens=2048, temperature=0.3)
 
         # ── 合并结果 ──
         return {
@@ -454,6 +510,40 @@ async def api_list_characters(book_id: str):
     return JSONResponse(chars)
 
 
+@app.get("/api/books/{book_id}/character-states")
+async def api_list_character_states(book_id: str):
+    states = NovelDB.list_character_states(book_id)
+    return JSONResponse(states)
+
+
+@app.post("/api/books/{book_id}/character-states/{character_id}")
+async def api_update_character_state(
+    book_id: str,
+    character_id: int,
+    location: str = Form(""),
+    status: str = Form(""),
+    last_chapter: int = Form(0),
+    time_note: str = Form(""),
+    is_alive: int = Form(1),
+):
+    state = NovelDB.get_character_state(book_id, character_id)
+    name = state.get("name", "") if state else ""
+    if not name:
+        char = NovelDB.get_character(character_id)
+        name = char.get("name", "") if char else ""
+    NovelDB.upsert_character_state(
+        book_id=book_id,
+        character_id=character_id,
+        name=name,
+        location=location,
+        status=status,
+        last_chapter=last_chapter,
+        time_note=time_note,
+        is_alive=is_alive,
+    )
+    return JSONResponse({"ok": True})
+
+
 @app.post("/api/books/{book_id}/characters")
 async def api_create_character(
     book_id: str,
@@ -463,6 +553,11 @@ async def api_create_character(
     traits: str = Form("[]"),
     appearance: str = Form(""),
     relationships: str = Form("[]"),
+    first_appearance_volume: int = Form(1),
+    first_appearance_desc: str = Form(""),
+    speech_style: str = Form(""),
+    dialogue_sample: str = Form(""),
+    emotion_profile: str = Form(""),
 ):
     try:
         traits_list = json.loads(traits)
@@ -471,7 +566,12 @@ async def api_create_character(
         traits_list = []
         rels_list = []
     c = NovelDB.create_character(book_id, name, description, background,
-                                  traits_list, appearance, rels_list)
+                                  traits_list, appearance, rels_list,
+                                  first_appearance_volume=first_appearance_volume,
+                                  first_appearance_desc=first_appearance_desc,
+                                  speech_style=speech_style,
+                                  dialogue_sample=dialogue_sample,
+                                  emotion_profile=emotion_profile)
     return JSONResponse(c)
 
 
@@ -479,7 +579,12 @@ async def api_create_character(
 async def api_update_character(char_id: int, name: str = Form(""),
                                 description: str = Form(""), background: str = Form(""),
                                 traits: str = Form(None), appearance: str = Form(""),
-                                relationships: str = Form(None)):
+                                relationships: str = Form(None),
+                                first_appearance_volume: int = Form(None),
+                                first_appearance_desc: str = Form(None),
+                                speech_style: str = Form(None),
+                                dialogue_sample: str = Form(None),
+                                emotion_profile: str = Form(None)):
     kwargs = {"name": name, "description": description, "background": background, "appearance": appearance}
     if traits is not None:
         try:
@@ -491,6 +596,16 @@ async def api_update_character(char_id: int, name: str = Form(""),
             kwargs["relationships"] = json.loads(relationships)
         except json.JSONDecodeError:
             pass
+    if first_appearance_volume is not None:
+        kwargs["first_appearance_volume"] = first_appearance_volume
+    if first_appearance_desc is not None:
+        kwargs["first_appearance_desc"] = first_appearance_desc
+    if speech_style is not None:
+        kwargs["speech_style"] = speech_style
+    if dialogue_sample is not None:
+        kwargs["dialogue_sample"] = dialogue_sample
+    if emotion_profile is not None:
+        kwargs["emotion_profile"] = emotion_profile
     NovelDB.update_character(char_id, **kwargs)
     return JSONResponse({"ok": True})
 
@@ -617,13 +732,30 @@ async def api_generate_volume_outlines(vol_id: int, start_chapter: int = Form(0)
     gen_count = actual_end - actual_start
     # 已有细纲上下文
     existing_context = ""
-    if existing_outlines:
-        ctx_lines = []
-        for o in sorted(existing_outlines, key=lambda x: x["chapter_number"])[-5:]:
-            ctx_lines.append(f"第{o['chapter_number']}章「{o.get('title','')}」：{o.get('outline_content','')[:80]}")
-        existing_context = "\n已有细纲（最近几章）：\n" + "\n".join(ctx_lines)
+    ctx_lines = []
 
-    char_desc = "\n".join(f"- {c['name']}：{c['description']}" for c in characters) or "暂无"
+    # 如果有上一卷，加入上一卷最后几章作为衔接上下文
+    vol_number = vol.get("number", 0)
+    if vol_number > 1:
+        all_vols = NovelDB.list_volumes(book_id)
+        prev_vol = next((v for v in all_vols if v.get("number") == vol_number - 1), None)
+        if prev_vol:
+            prev_outlines = NovelDB.list_outlines(book_id, volume_id=prev_vol["id"])
+            if prev_outlines:
+                ctx_lines.append(f"——上一卷（第{vol_number-1}卷）最后几章——")
+                for o in sorted(prev_outlines, key=lambda x: x["chapter_number"])[-3:]:
+                    ctx_lines.append(f"第{o['chapter_number']}章「{o.get('title','')}」：{o.get('outline_content','')}")
+
+    # 当前卷已有细纲
+    if existing_outlines:
+        ctx_lines.append("——本卷已有细纲——")
+        for o in sorted(existing_outlines, key=lambda x: x["chapter_number"])[-5:]:
+            ctx_lines.append(f"第{o['chapter_number']}章「{o.get('title','')}」：{o.get('outline_content','')}")
+
+    if ctx_lines:
+        existing_context = "\n已有细纲上下文：\n" + "\n".join(ctx_lines)
+
+    char_desc = "\n".join(f"- {c['name']}（第{c.get('first_appearance_volume', 1)}卷登场）：{c['description']}" for c in characters) or "暂无"
     cfg_desc = merged_cfg.get("writing_rules", "") or "暂无"
     sl_desc = "\n".join(f"- {s.get('name','')}（{s.get('type','')}）：{s.get('description','')}" for s in storylines) or "暂无"
 
@@ -643,13 +775,18 @@ async def api_generate_volume_outlines(vol_id: int, start_chapter: int = Form(0)
         f"- word_target：目标字数（整数，默认{(min_words + max_words) // 2}）\n"
         "- conflict：核心冲突（50字以内，过渡章节可为空）\n"
         "- excitement：爽点设计（50字以内，过渡章节可为空）\n"
-        "- hook：章末钩子/悬念（50字以内，过渡章节可为空）\n"
+        "- hook：章末收尾（50字以内，自然收尾即可，不必强行悬念，过渡章节可为空）\n"
         "- storyline：推进的故事线（50字以内，过渡章节可为空）\n"
         "- foreshadowing：埋下的伏笔（50字以内，过渡章节可为空）\n"
-        "- foreshadowing_payoff：回收的伏笔（50字以内，可为空）\n"
+        "- foreshadowing_payoff：回收的伏笔（50字以内，可为空，但不要一直为空——每3-5章应该回收之前埋的一条伏笔，不要只埋不收）\n"
+        "- pace_type：本章节奏类型，取值为\"爆发\"、\"过渡\"或\"蓄势\"（爆发=高潮/动作密集章，过渡=衔接/推进剧情章，蓄势=铺垫情绪和张力的章）\n"
+        "- emotion：本章的主导情绪基调，用一个词描述，如：愤怒、悲伤、紧张、压抑、释然、温暖、恐惧、振奋、轻松、绝望、希望等\n"
         f"本次需要生成第{actual_start}章到第{actual_end - 1}章，共 {gen_count} 个章节。\n"
         f"chapter_number 必须从 {actual_start} 开始递增。\n"
         "注意：不是每章都需要所有字段。过渡章节的冲突、爽点、钩子、伏笔可为空，只填 outline_content 和 storyline 即可。\n"
+        "过渡章节的定义：推进剧情但不爆发冲突的章节、承上启下的章节、角色日常互动的章节。\n"
+        "重要：不要违背本卷已有的规划。重点关注本卷的「卷尾钩子」和「关键节点」——这些是已经定好的结尾事件，本卷的所有章节都必须为这些事件做铺垫，不能提前消耗或矛盾。比如卷尾钩子设定在最后几章发生的事件，不能在前几章就写掉。\n"
+        "角色的出场时机必须和角色背景故事匹配。不要在角色背景故事中明确的事件发生之前，就让该角色登场。\n"
         "不要输出其他内容，只输出 JSON。"
     )
     user = (
@@ -678,8 +815,7 @@ async def api_generate_volume_outlines(vol_id: int, start_chapter: int = Form(0)
     )
     try:
         wizard._ensure_client()
-        raw = wizard._chat(system, user, max_tokens=4096, temperature=0.7)
-        chapters = json.loads(raw)
+        chapters = wizard._chat(system, user, max_tokens=4096, temperature=0.7)
         if not isinstance(chapters, list):
             return JSONResponse({"error": "LLM 返回格式错误"}, status_code=500)
         # 不删除已有细纲，只追加新的
@@ -702,6 +838,8 @@ async def api_generate_volume_outlines(vol_id: int, start_chapter: int = Form(0)
                 storyline=ch.get("storyline", ""),
                 foreshadowing=ch.get("foreshadowing", ""),
                 foreshadowing_payoff=ch.get("foreshadowing_payoff", ""),
+                pace_type=ch.get("pace_type", ""),
+                emotion=ch.get("emotion", ""),
             )
             created.append(o)
         total_in_vol = len(existing_outlines) + len(created)
@@ -741,7 +879,7 @@ async def api_plan_volumes(book_id: str):
     target = book.get("target_words", 0) or 600000
     vol_count = max(3, min(12, target // 80000))
 
-    char_desc = "\n".join(f"- {c['name']}：{c['description']}" for c in characters) or "暂无"
+    char_desc = "\n".join(f"- {c['name']}（第{c.get('first_appearance_volume', 1)}卷登场）：{c['description']}" for c in characters) or "暂无"
     sl_desc = "\n".join(
         f"- {s.get('name', '')}（{s.get('type', '')}）：{s.get('description', '')}"
         for s in storylines
@@ -782,8 +920,7 @@ async def api_plan_volumes(book_id: str):
 
     try:
         wizard._ensure_client()
-        raw = wizard._chat(system, user, max_tokens=2048, temperature=0.7)
-        data = json.loads(raw)
+        data = wizard._chat(system, user, max_tokens=2048, temperature=0.7)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -853,7 +990,7 @@ async def api_generate_volume(book_id: str, volume_number: int = Form(...)):
             existing_vol = v
             break
 
-    char_desc = "\n".join(f"- {c['name']}：{c['description']}" for c in characters) or "暂无"
+    char_desc = "\n".join(f"- {c['name']}（第{c.get('first_appearance_volume', 1)}卷登场）：{c['description']}" for c in characters) or "暂无"
     sl_desc = "\n".join(
         f"- {s.get('name', '')}（{s.get('type', '')}）：{s.get('description', '')}"
         for s in storylines
@@ -942,8 +1079,7 @@ async def api_generate_volume(book_id: str, volume_number: int = Form(...)):
 
     try:
         wizard._ensure_client()
-        raw = wizard._chat(system, user, max_tokens=4096, temperature=0.7)
-        data = json.loads(raw)
+        data = wizard._chat(system, user, max_tokens=4096, temperature=0.7)
 
         if isinstance(data, list):
             data = data[0] if data else {}
@@ -1016,10 +1152,12 @@ async def api_create_outline(book_id: str, chapter_number: int = Form(...),
                               volume_id: int = Form(None), word_target: int = Form(2000),
                               conflict: str = Form(""), excitement: str = Form(""),
                               hook: str = Form(""), storyline: str = Form(""),
-                              foreshadowing: str = Form(""), foreshadowing_payoff: str = Form("")):
+                              foreshadowing: str = Form(""), foreshadowing_payoff: str = Form(""),
+                              pace_type: str = Form(""), emotion: str = Form("")):
     o = NovelDB.create_outline(book_id, chapter_number, title, outline_content,
                                 volume_id, word_target,
-                                conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff)
+                                conflict, excitement, hook, storyline, foreshadowing, foreshadowing_payoff,
+                                pace_type, emotion)
     return JSONResponse(o)
 
 
@@ -1030,7 +1168,8 @@ async def api_update_outline(outline_id: int, chapter_number: int = Form(None),
                               volume_id: int = Form(None),
                               conflict: str = Form(None), excitement: str = Form(None),
                               hook: str = Form(None), storyline: str = Form(None),
-                              foreshadowing: str = Form(None), foreshadowing_payoff: str = Form(None)):
+                              foreshadowing: str = Form(None), foreshadowing_payoff: str = Form(None),
+                              pace_type: str = Form(None), emotion: str = Form(None)):
     kwargs = {}
     if chapter_number is not None: kwargs["chapter_number"] = chapter_number
     if title is not None: kwargs["title"] = title
@@ -1044,6 +1183,8 @@ async def api_update_outline(outline_id: int, chapter_number: int = Form(None),
     if storyline is not None: kwargs["storyline"] = storyline
     if foreshadowing is not None: kwargs["foreshadowing"] = foreshadowing
     if foreshadowing_payoff is not None: kwargs["foreshadowing_payoff"] = foreshadowing_payoff
+    if pace_type is not None: kwargs["pace_type"] = pace_type
+    if emotion is not None: kwargs["emotion"] = emotion
     NovelDB.update_outline(outline_id, **kwargs)
     return JSONResponse({"ok": True})
 
@@ -1381,7 +1522,7 @@ async def api_batch_write(book_id: str, start_chapter: int = Form(1), end_chapte
                 # 用队列从线程中收集流式 token
                 token_queue = queue.Queue()
                 def status_callback(msg):
-                    if isinstance(msg, dict) and msg.get("type") == "token":
+                    if isinstance(msg, dict):
                         token_queue.put(msg)
                     else:
                         token_queue.put({"type": "status", "text": msg})
@@ -1397,6 +1538,8 @@ async def api_batch_write(book_id: str, start_chapter: int = Form(1), end_chapte
                         msg = token_queue.get(timeout=0.1)
                         if msg.get("type") == "token":
                             yield f"data: {json.dumps({'ok': True, 'phase': 'generate', 'status': 'token', 'chapter_number': ch_num, 'text': msg['text'], 'content': msg['content']})}\n\n"
+                        elif msg.get("type") == "stage":
+                            yield f"data: {json.dumps({'phase': 'generate', 'status': 'stage', 'chapter_number': ch_num, 'stage': msg.get('stage', ''), 'text': msg.get('text', '')})}\n\n"
                     except queue.Empty:
                         await asyncio.sleep(0.05)
                 # 获取最终结果
@@ -1585,6 +1728,10 @@ async def api_wizard_generate(
                 traits=ch.get("traits", []),
                 appearance=ch.get("appearance", ""),
                 relationships=ch.get("relationships", []),
+                first_appearance_volume=ch.get("first_appearance_volume", 1),
+                first_appearance_desc=ch.get("first_appearance_desc", ""),
+                speech_style=ch.get("speech_style", ""),
+                dialogue_sample=ch.get("dialogue_sample", ""),
             )
 
         # 写入分卷（暂时禁用，后续单独优化分卷大纲生成）

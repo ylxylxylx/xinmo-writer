@@ -9,6 +9,8 @@ const book = ref({})
 const chapters = ref([])
 const outlines = ref([])
 const volumes = ref([])
+const characterStates = ref([])
+const csLoading = ref(false)
 const writing = ref(false)
 const regenerating = ref(null)
 const activeVolId = ref(null)
@@ -29,6 +31,10 @@ const dialogLoading = ref(false)
 const editContent = ref("")
 const editTitle = ref("")
 const savingChapter = ref(false)
+
+const showCharacterStateDialog = ref(false)
+const editingState = ref({ character_id: null, name: '', location: '', status: '', last_chapter: 0, time_note: '' })
+const savingState = ref(false)
 // 字数计算：和后端一致，去掉空格和换行
 const dialogWordCount = computed(() => {
   if (!editContent.value) return 0
@@ -44,18 +50,32 @@ watch(streamingContent, () => {
   })
 })
 
+async function loadCharacterStates() {
+  try {
+    csLoading.value = true
+    const cs = await apiGet(`/books/${route.params.bookId}/character-states`)
+    characterStates.value = cs || []
+  } catch (e) {
+    ElMessage.error("刷新角色状态失败: " + e.message)
+  } finally {
+    csLoading.value = false
+  }
+}
+
 async function load() {
   try {
-    const [ch, ol, vl, bk] = await Promise.all([
+    const [ch, ol, vl, bk, cs] = await Promise.all([
       apiGet(`/books/${route.params.bookId}/chapters`),
       apiGet(`/books/${route.params.bookId}/outlines`),
       apiGet(`/books/${route.params.bookId}/volumes`),
       apiGet(`/books/${route.params.bookId}`),
+      loadCharacterStates(),
     ])
     chapters.value = ch || []
     outlines.value = ol || []
     volumes.value = vl || []
     book.value = bk || {}
+    // characterStates 由 loadCharacterStates() 内部更新
     if (route.query.vol) activeVolId.value = Number(route.query.vol)
     if (!activeVolId.value && volumes.value.length > 0) {
       const vol = volumes.value.find(v => outlines.value.some(o => o.volume_id === v.id))
@@ -117,7 +137,7 @@ const foreshadowingPool = computed(() => {
     // 收伏笔
     if (ol.foreshadowing_payoff && ol.foreshadowing_payoff.trim()) {
       const payText = ol.foreshadowing_payoff.trim()
-      const idx = items.findIndex(it => it.resolvedAt === null && (it.text.includes(payText) || payText.includes(it.text)))
+      const idx = items.findIndex(it => it.resolvedAt === null)
       if (idx >= 0) {
         items[idx].resolvedAt = ch
         items[idx].resolvedWritten = written
@@ -199,6 +219,8 @@ async function generateBatch() {
             batchProgress.value.current = p.chapter_number
             streamingChapter.value = p.chapter_number
             streamingContent.value = ""
+          } else if (p.status === 'stage') {
+            addLog(p.text || p.stage, 'info')
           } else if (p.status === 'token') {
             streamingContent.value = p.content
           } else if (p.status === 'chapter_done') {
@@ -223,13 +245,18 @@ async function generateBatch() {
   } finally {
     generatingBatch.value = false
     await load()
+    // 角色状态已在写章时同步提取，load() 中已包含最新数据
   }
 }
 
 async function regenerate(ch) {
   try { await ElMessageBox.confirm(`确定重写第${ch.chapter_number}章？`, "重写确认", { type: "warning" }) } catch { return }
   regenerating.value = ch.id
-  try { await apiPost(`/books/${route.params.bookId}/regenerate`, { chapter_number: ch.chapter_number }); ElMessage.success("已重写"); await load() }
+  try {
+    await apiPost(`/books/${route.params.bookId}/regenerate`, { chapter_number: ch.chapter_number })
+    ElMessage.success("已重写")
+    await load()
+  }
   catch (e) { ElMessage.error("重写失败: " + e.message) }
   finally { regenerating.value = null }
 }
@@ -237,6 +264,39 @@ async function regenerate(ch) {
 async function approve(ch) {
   try { await apiPost(`/chapters/${ch.id}/approve`, {}); ElMessage.success("已批准"); await load() }
   catch (e) { ElMessage.error("批准失败: " + e.message) }
+}
+
+function editCharacterState(cs) {
+  editingState.value = {
+    character_id: cs.character_id,
+    name: cs.name,
+    location: cs.location || '',
+    status: cs.status || '',
+    last_chapter: cs.last_chapter || 0,
+    time_note: cs.time_note || '',
+    is_alive: cs.is_alive !== undefined ? cs.is_alive : 1,
+  }
+  showCharacterStateDialog.value = true
+}
+
+async function saveCharacterState() {
+  savingState.value = true
+  try {
+    await apiPost(`/books/${route.params.bookId}/character-states/${editingState.value.character_id}`, {
+      location: editingState.value.location,
+      status: editingState.value.status,
+      last_chapter: editingState.value.last_chapter,
+      time_note: editingState.value.time_note,
+      is_alive: editingState.value.is_alive ? 1 : 0,
+    })
+    ElMessage.success("角色状态已保存")
+    showCharacterStateDialog.value = false
+    await loadCharacterStates()
+  } catch (e) {
+    ElMessage.error("保存失败: " + e.message)
+  } finally {
+    savingState.value = false
+  }
 }
 
 async function viewChapter(ch) {
@@ -299,7 +359,7 @@ async function saveChapter() {
     <div v-else-if="activeOutlines.length === 0" class="empty-state"><p>该卷还没有细纲</p><p class="empty-hint">请先到「整文细纲」页面生成细纲</p></div>
     <div v-else-if="activeChapters.length === 0" class="empty-state"><p>该卷还没有正文</p><p class="empty-hint">点击上方「生成正文」开始创作</p></div>
 
-    <!-- 主内容区：左侧章节列表 + 右侧伏笔池 -->
+    <!-- 主内容区：左侧章节列表 + 中间角色状态 + 右侧伏笔池 -->
     <div class="main-layout" v-if="activeChapters.length > 0">
       <!-- 左侧：章节列表 -->
       <div class="chapter-list-panel">
@@ -308,6 +368,7 @@ async function saveChapter() {
             <div class="chapter-left">
               <el-tag size="small">第{{ ch.chapter_number }}章</el-tag>
               <span class="chapter-title" @click="viewChapter(ch)">{{ ch.title || "无标题" }}</span>
+              <el-tag v-if="outlineForChapter(ch.chapter_number)?.pace_type" :type="outlineForChapter(ch.chapter_number).pace_type === '爆发' ? 'danger' : outlineForChapter(ch.chapter_number).pace_type === '蓄势' ? 'warning' : 'info'" size="small" effect="plain">{{ outlineForChapter(ch.chapter_number).pace_type }}</el-tag>
               <span class="chapter-words">{{ ch.word_count || 0 }}字</span>
               <el-tag v-if="ch.word_count > 3000" type="danger" size="small" effect="dark">字数超标</el-tag>
             </div>
@@ -337,6 +398,14 @@ async function saveChapter() {
                 <span class="outline-field-label">故事线：</span>
                 <span class="outline-field-value">{{ outlineForChapter(ch.chapter_number).storyline }}</span>
               </div>
+              <div v-if="outlineForChapter(ch.chapter_number).pace_type" class="outline-field" :class="'outline-field--pace-' + outlineForChapter(ch.chapter_number).pace_type">
+                <span class="outline-field-label">节奏：</span>
+                <span class="outline-field-value">{{ outlineForChapter(ch.chapter_number).pace_type }}</span>
+              </div>
+              <div v-if="outlineForChapter(ch.chapter_number).emotion" class="outline-field outline-field--emotion">
+                <span class="outline-field-label">情绪：</span>
+                <span class="outline-field-value">{{ outlineForChapter(ch.chapter_number).emotion }}</span>
+              </div>
               <div v-if="outlineForChapter(ch.chapter_number).foreshadowing" class="outline-field outline-field--foreshadowing">
                 <span class="outline-field-label">伏笔：</span>
                 <span class="outline-field-value">{{ outlineForChapter(ch.chapter_number).foreshadowing }}</span>
@@ -359,6 +428,41 @@ async function saveChapter() {
             small
             background
           />
+        </div>
+      </div>
+
+      <!-- 中间：角色状态 -->
+      <div class="character-state-panel">
+        <div class="cs-panel-header">
+          <h3>角色状态</h3>
+          <div class="cs-header-actions">
+            <span class="cs-count">{{ characterStates.length }} 人</span>
+            <el-button size="small" :loading="csLoading" @click="loadCharacterStates">刷新</el-button>
+          </div>
+        </div>
+
+        <div v-if="characterStates.length > 0" class="cs-list">
+          <div v-for="cs in characterStates" :key="cs.character_id" class="cs-item" :class="{ 'cs-dead': !cs.is_alive }">
+            <div class="cs-item-header">
+              <div class="cs-name">{{ cs.name }}
+                <span v-if="!cs.is_alive" class="cs-dead-badge">已死亡</span>
+              </div>
+              <el-button size="small" text @click="editCharacterState(cs)">编辑</el-button>
+            </div>
+            <div class="cs-meta">
+              <span v-if="cs.location" class="cs-location">📍 {{ cs.location }}</span>
+              <span v-if="cs.status" class="cs-status">{{ cs.status }}</span>
+            </div>
+            <div class="cs-footer">
+              <span class="cs-last">最后出场：第{{ cs.last_chapter || '?' }}章</span>
+              <span v-if="cs.time_note" class="cs-time-note">⏱ {{ cs.time_note }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div v-else class="cs-empty">
+          <p>暂无角色状态数据</p>
+          <p class="cs-empty-hint">新章节生成或重写后会自动更新（约需几秒），也可点击右上角刷新</p>
         </div>
       </div>
 
@@ -464,6 +568,38 @@ async function saveChapter() {
       <el-button type="primary" :loading="savingChapter" @click="saveChapter">保存</el-button>
     </template>
   </el-dialog>
+
+  <!-- 角色状态编辑弹窗 -->
+  <el-dialog v-model="showCharacterStateDialog" :title="`编辑角色状态：${editingState.name}`" width="480px" append-to-body destroy-on-close>
+    <div class="cs-form">
+      <div class="cs-form-item">
+        <label>当前位置</label>
+        <el-input v-model="editingState.location" placeholder="例如：西域·流沙城" />
+      </div>
+      <div class="cs-form-item">
+        <label>当前状态</label>
+        <el-input v-model="editingState.status" type="textarea" :rows="3" placeholder="例如：被困沙暴，等待救援" />
+      </div>
+      <div class="cs-form-item">
+        <label>最后出场章节</label>
+        <el-input-number v-model="editingState.last_chapter" :min="0" :controls="false" style="width:120px;" />
+      </div>
+      <div class="cs-form-item">
+        <label>时间线标注</label>
+        <el-input v-model="editingState.time_note" placeholder="例如：三天后、翌日清晨" />
+      </div>
+      <div class="cs-form-item cs-form-switch">
+        <label>存活状态</label>
+        <el-switch v-model="editingState.is_alive" :active-value="1" :inactive-value="0"
+          active-text="存活" inactive-text="已死亡"
+          style="--el-switch-on-color: #67c23a; --el-switch-off-color: #f56c6c;" />
+      </div>
+    </div>
+    <template #footer>
+      <el-button @click="showCharacterStateDialog = false">取消</el-button>
+      <el-button type="primary" :loading="savingState" @click="saveCharacterState">保存</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -522,9 +658,40 @@ async function saveChapter() {
 .outline-field--storyline .outline-field-label { color: #67c23a; }
 .outline-field--foreshadowing .outline-field-label { color: #b37feb; }
 .outline-field--payoff .outline-field-label { color: #36cfc9; }
+.outline-field--pace-爆发 .outline-field-label { color: #f56c6c; }
+.outline-field--pace-过渡 .outline-field-label { color: #909399; }
+.outline-field--pace-蓄势 .outline-field-label { color: #e6a23c; }
+.outline-field--emotion .outline-field-label { color: #409eff; }
 
 /* 伏笔池面板 */
 .foreshadowing-panel { width: 280px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; position: sticky; top: 20px; max-height: calc(100vh - 120px); overflow-y: auto; }
+
+/* 角色状态面板 */
+.character-state-panel { width: 240px; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; position: sticky; top: 20px; max-height: calc(100vh - 120px); overflow-y: auto; }
+.cs-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.cs-panel-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.cs-header-actions { display: flex; align-items: center; gap: 8px; }
+.cs-count { font-size: 11px; color: var(--text-dim); }
+.cs-list { display: flex; flex-direction: column; gap: 10px; }
+.cs-item { padding: 10px 12px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
+.cs-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.cs-name { font-size: 14px; font-weight: 600; color: var(--gold); }
+.cs-dead-badge { font-size: 11px; font-weight: 500; color: #f56c6c; margin-left: 6px; padding: 1px 6px; border: 1px solid #f56c6c; border-radius: 4px; }
+.cs-dead { opacity: 0.65; border-color: #f56c6c33; }
+.cs-dead .cs-name { color: #999; text-decoration: line-through; }
+.cs-meta { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; font-size: 12px; }
+.cs-location { color: var(--text-secondary); }
+.cs-status { color: var(--text); line-height: 1.4; }
+.cs-footer { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-dim); }
+.cs-time-note { color: #e6a23c; }
+.cs-empty { text-align: center; color: var(--text-dim); font-size: 13px; padding: 20px 0; }
+.cs-empty-hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+
+.cs-form { display: flex; flex-direction: column; gap: 16px; }
+.cs-form-item { display: flex; flex-direction: column; gap: 6px; }
+.cs-form-item label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+
+/* 伏笔池条目 */
 .fs-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .fs-panel-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .fs-count { font-size: 11px; color: var(--text-dim); }
